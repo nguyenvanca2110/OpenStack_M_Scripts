@@ -2,7 +2,7 @@
 
 OpenStack Installation script by DCN Lab
 
-* **Version:** Liberty
+* **Version:** Mitaka
 
 * **Install mode:** All-in-One(only one box), Multi mode(controller+networks and compute node)
 
