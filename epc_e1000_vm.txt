@@ -1,0 +1,1061 @@
+cd ~
+wget -c http://fs2.download82.com/software/bbd8ff9dba17080c0c121804efbd61d5/jperf/jperf-2.0.2.zip
+unzip jperf-2.0.2.zip
+cd jperf-2.0.2
+chmod a+x jperf.sh
+
+sed -i 's/archive.ubuntu.com/ftp.daum.net/g' /etc/apt/sources.list
+sudo apt-get install subversion git
+sudo apt-get install python-pip
+sudo pip install speedtest-cli
+sudo pip install speedtest-cli --upgrade
+
+
+#######################################
+# EPC_IP and VM create (controller node에서 작업)
+#######################################
+
+#######################################
+### create networks 
+#######################################
+neutron net-delete e1000v_254.x
+neutron net-create e1000v_254.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-eth2
+neutron subnet-create --name e1000v_sub_254.x \
+--gateway 192.168.254.1 \
+--allocation-pool start=192.168.254.2,end=192.168.254.254 \
+--dns-nameserver 8.8.8.8 \
+e1000v_254.x 192.168.254.0/24
+
+neutron net-delete e1000v_1.x
+neutron net-create e1000v_1.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name e1000v_sub_1.x \
+--disable-dhcp \
+--gateway 192.168.1.1 \
+--allocation-pool start=192.168.1.2,end=192.168.1.254 \
+e1000v_1.x 192.168.1.0/24
+
+neutron net-delete e1000v_2.x
+neutron net-create e1000v_2.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name e1000v_sub_2.x \
+--disable-dhcp \
+--gateway 192.168.2.1 \
+--allocation-pool start=192.168.2.2,end=192.168.2.254 \
+e1000v_2.x 192.168.2.0/24
+
+neutron net-delete e1000v_3.x
+neutron net-create e1000v_3.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name e1000v_sub_3.x \
+--disable-dhcp \
+--gateway 192.168.3.1 \
+--allocation-pool start=192.168.3.2,end=192.168.3.254 \
+e1000v_3.x 192.168.3.0/24
+
+neutron net-delete e1000v_4.x
+neutron net-create e1000v_4.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name e1000v_sub_4.x \
+--gateway 192.168.4.1 \
+--allocation-pool start=192.168.4.2,end=192.168.4.254 \
+e1000v_4.x 192.168.4.0/24
+
+neutron net-delete e1000v_101.x
+neutron net-create e1000v_101.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-eth2
+neutron subnet-create --name e1000v_sub_101.x \
+--disable-dhcp \
+--gateway 192.168.101.1 \
+--allocation-pool start=192.168.101.2,end=192.168.101.254 \
+e1000v_101.x 192.168.101.0/24
+
+neutron net-delete e1000v_102.x
+neutron net-create e1000v_102.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-eth2
+neutron subnet-create --name e1000v_sub_102.x \
+--disable-dhcp \
+--gateway 192.168.102.1 \
+--allocation-pool start=192.168.102.2,end=192.168.102.254 \
+e1000v_102.x 192.168.102.0/24
+
+neutron net-delete e1000v_103.x
+neutron net-create e1000v_103.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-eth2
+neutron subnet-create --name e1000v_sub_103.x \
+--disable-dhcp \
+--gateway 192.168.103.1 \
+--allocation-pool start=192.168.103.2,end=192.168.103.254 \
+e1000v_103.x 192.168.103.0/24
+
+neutron net-delete e1000v_104.x
+neutron net-create e1000v_104.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-eth2
+neutron subnet-create --name e1000v_sub_104.x \
+--disable-dhcp \
+--gateway 192.168.104.1 \
+--allocation-pool start=192.168.104.2,end=192.168.104.254 \
+e1000v_104.x 192.168.104.0/24
+
+#######################################
+### allocate fixed ip for VM
+#######################################
+nova flavor-list
+nova flavor-create --is-public true m1.epc auto 4096 20 2 --rxtx-factor 1
+nova flavor-create --is-public true m1.aio auto 16384 40 4 --rxtx-factor 1
+nova flavor-create --is-public true m1.dist auto 8192 40 2 --rxtx-factor 1
+
+####### dist #######
+nova delete e1000v-dist
+neutron port-delete e1000v-dist-mgmt
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.254 \
+--name e1000v-dist-mgmt
+nova boot --flavor=m1.dist --image=dist_snap \
+--nic port-id=$(neutron port-list | awk '/ e1000v-dist-mgmt / {print $2}') \
+e1000v-dist
+
+nova interface-detach e1000v-dist $(neutron port-list | awk '/ e1000v-dist-mgmt / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ e1000v-dist-mgmt / {print $2}') e1000v-dist
+
+
+
+nova delete e1000v-igw
+neutron port-delete e1000v-igw-mgmt
+neutron port-delete e1000v-igw-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.70 \
+--name e1000v-igw-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.70 \
+--name e1000v-igw-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-igw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-igw-net_a / {print $2}') \
+e1000v-igw
+
+nova delete e1000v-gdb
+neutron port-delete e1000v-gdb-mgmt
+neutron port-delete e1000v-gdb-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.253 \
+--name e1000v-gdb-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.253 \
+--name e1000v-gdb-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-gdb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-gdb-net_a / {print $2}') \
+e1000v-gdb
+
+####### enabler #######
+nova delete e1000v-mdf
+neutron port-delete e1000v-mdf-mgmt
+neutron port-delete e1000v-mdf-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.41 \
+--name e1000v-mdf-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.41 \
+--name e1000v-mdf-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-mdf-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-mdf-net_a / {print $2}') \
+e1000v-mdf
+
+nova delete e1000v-dns-hss-img
+neutron port-delete e1000v-dhi-mgmt
+neutron port-delete e1000v-dhi-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.40 \
+--name e1000v-dhi-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.40 \
+--name e1000v-dhi-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-dhi-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-dhi-net_a / {print $2}') \
+e1000v-dns-hss-img
+
+nova delete e1000v-andsf
+neutron port-delete e1000v-andsf-mgmt
+neutron port-delete e1000v-andsf-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.31 \
+--name e1000v-andsf-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.31 \
+--name e1000v-andsf-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-andsf-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-andsf-net_a / {print $2}') \
+e1000v-andsf
+
+nova delete e1000v-http-proxy
+neutron port-delete e1000v-proxy-mgmt
+neutron port-delete e1000v-proxy-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.42 \
+--name e1000v-proxy-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.42 \
+--name e1000v-proxy-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-proxy-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-proxy-net_a / {print $2}') \
+e1000v-http-proxy
+
+nova delete e1000v-pcrf
+neutron port-delete e1000v-pcrf-mgmt
+neutron port-delete e1000v-pcrf-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.30 \
+--name e1000v-pcrf-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.30 \
+--name e1000v-pcrf-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-pcrf-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-pcrf-net_a / {print $2}') \
+e1000v-pcrf
+
+nova delete e1000v-aaa
+neutron port-delete e1000v-aaa-mgmt
+neutron port-delete e1000v-aaa-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.71 \
+--name e1000v-aaa-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.71 \
+--name e1000v-aaa-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-aaa-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-aaa-net_a / {print $2}') \
+e1000v-aaa
+
+nova delete e1000v-www
+neutron port-delete e1000v-www-mgmt
+neutron port-delete e1000v-www-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.32 \
+--name e1000v-www-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.32 \
+--name e1000v-www-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-www-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-www-net_a / {print $2}') \
+e1000v-www
+
+nova delete e1000v-ccb
+neutron port-delete e1000v-ccb-mgmt
+neutron port-delete e1000v-ccb-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.50 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.51 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.52 \
+--name e1000v-ccb-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.50 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.51 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.52 \
+--name e1000v-ccb-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ccb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ccb-net_a / {print $2}') \
+e1000v-ccb
+
+####### enablers #######
+nova delete e1000v-enablers
+neutron port-delete e1000v-enablers-mgmt
+neutron port-delete e1000v-enablers-net_a
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.40 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.32 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.30 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.31 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.41 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.42 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.50 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.51 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.52 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.71 \
+--name e1000v-enablers-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.40 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.32 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.30 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.31 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.41 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.42 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.50 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.51 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.52 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.71 \
+--name e1000v-enablers-net_a
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-enablers-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-enablers-net_a / {print $2}') \
+e1000v-enablers
+
+####### pgw #######
+nova delete e1000v-pgw
+neutron port-delete e1000v-pgw-mgmt
+neutron port-delete e1000v-pgw-net_a
+neutron port-delete e1000v-pgw-net_b
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.10 \
+--name e1000v-pgw-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.10 \
+--name e1000v-pgw-net_a
+neutron port-create e1000v_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_2.x,ip_address=192.168.2.10 \
+--name e1000v-pgw-net_b
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-pgw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-pgw-net_a / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-pgw-net_b / {print $2}') \
+e1000v-pgw
+
+####### sgw (mgmt:eth0, net_b:eth1, net_d:eth2)#######
+nova delete e1000v-sgw
+neutron port-delete e1000v-sgw-mgmt
+neutron port-delete e1000v-sgw-net_b
+neutron port-delete e1000v-sgw-net_d
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.20 \
+--name e1000v-sgw-mgmt
+neutron port-create e1000v_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_2.x,ip_address=192.168.2.20 \
+--name e1000v-sgw-net_b
+neutron port-create e1000v_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_4.x,ip_address=192.168.4.20 \
+--name e1000v-sgw-net_d
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-sgw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-sgw-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-sgw-net_d / {print $2}') \
+e1000v-sgw
+
+neutron port-delete flat-sgw_net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.20 \
+--name flat-sgw_net_d
+nova interface-detach e1000v-sgw $(neutron port-list | awk '/ flat-sgw_net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-sgw_net_d / {print $2}') e1000v-sgw
+
+####### mme (mgmt:eth0, net_d:eth1)#######
+nova delete e1000v-mme
+neutron port-delete e1000v-mme-mgmt
+neutron port-delete e1000v-mme-net_d
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.80 \
+--name e1000v-mme-mgmt
+neutron port-create e1000v_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_4.x,ip_address=192.168.4.80 \
+--name e1000v-mme-net_d
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-mme-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-mme-net_d / {print $2}') \
+e1000v-mme
+
+neutron port-delete flat-mme-net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.80 \
+--name flat-mme-net_d
+nova interface-detach e1000v-mme $(neutron port-list | awk '/ flat-mme-net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-mme-net_d / {print $2}') e1000v-mme
+
+####### enodeb (mgmt:eth0, net_c:eth1, net_d:eth2)#######
+nova delete e1000v-enb
+neutron port-delete e1000v-enb-mgmt
+neutron port-delete e1000v-enb-net_c
+neutron port-delete e1000v-enb-net_d
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.90 \
+--name e1000v-enb-mgmt
+neutron port-create e1000v_3.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_3.x,ip_address=192.168.3.29 \
+--name e1000v-enb-net_c
+neutron port-create e1000v_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_4.x,ip_address=192.168.4.90 \
+--name e1000v-enb-net_d
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-enb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-enb-net_c / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-enb-net_d / {print $2}') \
+e1000v-enb
+
+neutron port-delete flat-enb-net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.90 \
+--name flat-enb-net_d
+nova interface-detach e1000v-enb $(neutron port-list | awk '/ flat-enb-net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-enb-net_d / {print $2}') e1000v-enb
+
+####### epdg (net_c:eth0, mgmt:eth1, net_b:eth2)#######
+nova delete e1000v-epdg
+neutron port-delete e1000v-epdg-mgmt
+neutron port-delete e1000v-epdg-net_b
+neutron port-delete e1000v-epdg-net_c
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.21 \
+--name e1000v-epdg-mgmt
+neutron port-create e1000v_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_2.x,ip_address=192.168.2.21 \
+--name e1000v-epdg-net_b
+neutron port-create e1000v_3.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_3.x,ip_address=192.168.3.21 \
+--name e1000v-epdg-net_c
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-epdg-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-epdg-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-epdg-net_c / {print $2}') \
+e1000v-epdg
+
+neutron port-delete flat-epdg-net_c
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_3.x,ip_address=192.168.3.21 \
+--name flat-epdg-net_c
+nova interface-detach e1000v-epdg $(neutron port-list | awk '/ flat-epdg-net_c / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-epdg-net_c / {print $2}') e1000v-epdg
+
+####### ue #######
+nova delete e1000v-ue
+neutron port-delete e1000v-ue-mgmt
+neutron port-delete e1000v-ue-an_lte
+neutron port-delete e1000v-ue-an_gprs
+neutron port-delete e1000v-ue-an_umts
+neutron port-delete e1000v-ue-an_wifi
+neutron port-delete e1000v-ue-an_wimax
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.100 \
+--name e1000v-ue-mgmt
+neutron port-create e1000v_3.x \
+--port_security_enabled=False \
+--name e1000v-ue-an_lte
+neutron port-create e1000v_101.x \
+--name e1000v-ue-an_gprs
+neutron port-create e1000v_102.x \
+--name e1000v-ue-an_umts
+neutron port-create e1000v_4.x \
+--name e1000v-ue-an_wifi
+neutron port-create e1000v_103.x \
+--name e1000v-ue-an_wimax
+nova boot --flavor=m1.epc --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ue-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ue-an_lte / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ue-an_gprs / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ue-an_umts / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ue-an_wifi / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-ue-an_wimax / {print $2}') \
+e1000v-ue
+
+######################################
+## allinone
+######################################
+nova delete e1000v-aio
+neutron port-delete e1000v-aio-mgmt
+neutron port-delete e1000v-aio-net_a
+neutron port-delete e1000v-aio-net_b
+neutron port-delete e1000v-aio-net_d
+neutron port-create e1000v_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.153 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.15 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.25 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.35 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.36 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.37 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.45 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.46 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.47 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.55 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.56 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.57 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.76 \
+--fixed-ip subnet_id=e1000v_sub_254.x,ip_address=192.168.254.85 \
+--name e1000v-aio-mgmt
+neutron port-create e1000v_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.153 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.15 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.35 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.36 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.37 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.45 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.46 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.47 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.55 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.56 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.57 \
+--fixed-ip subnet_id=e1000v_sub_1.x,ip_address=192.168.1.76 \
+--name e1000v-aio-net_a
+neutron port-create e1000v_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_2.x,ip_address=192.168.2.15 \
+--fixed-ip subnet_id=e1000v_sub_2.x,ip_address=192.168.2.25 \
+--name e1000v-aio-net_b
+neutron port-create e1000v_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v_sub_4.x,ip_address=192.168.4.25 \
+--fixed-ip subnet_id=e1000v_sub_4.x,ip_address=192.168.4.85 \
+--name e1000v-aio-net_d
+nova boot --flavor=m1.aio --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ e1000v-aio-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-aio-net_a / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-aio-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ e1000v-aio-net_d / {print $2}') \
+e1000v-aio
+
+neutron port-delete flat-aio_net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.25 \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.85 \
+--name flat-aio_net_d
+nova interface-detach e1000v-aio $(neutron port-list | awk '/ flat-aio_net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-aio_net_d / {print $2}') e1000v-aio
+
+
+#### port change
+neutron port-update \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.243 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.110 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.120 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.130 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.131 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.132 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.140 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.141 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.142 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.150 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.151 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.152 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.171 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.180 \
+$(neutron port-list | awk '/ aio-mgmt / {print $2}')
+
+neutron port-update \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.243 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.110 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.130 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.131 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.132 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.140 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.141 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.142 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.150 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.171 \
+$(neutron port-list | awk '/ aio-net_a / {print $2}')
+
+neutron port-update \
+--fixed-ip subnet_id=sub_2.x,ip_address=192.168.2.110 \
+--fixed-ip subnet_id=sub_2.x,ip_address=192.168.2.120 \
+$(neutron port-list | awk '/ aio-net_b / {print $2}')
+
+neutron port-update \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.120 \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.180 \
+$(neutron port-list | awk '/ aio-flat_net_d / {print $2}')
+
+
+######################################
+# 아이피 변경
+mgmt
+grep -r "192.168.254.70" .
+grep -r "192.168.254.253" .
+grep -r "192.168.254.40" .
+grep -r "192.168.254.32" .
+grep -r "192.168.254.30" .
+grep -r "192.168.254.31" .
+grep -r "192.168.254.41" .
+grep -r "192.168.254.42" .
+grep -r "192.168.254.71" .
+grep -r "192.168.254.10" .
+grep -r "192.168.254.20" .
+grep -r "192.168.254.80" .
+grep -r "192.168.254.21" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.70/192.168.254.170/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.253/192.168.254.252/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.40/192.168.254.140/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.32/192.168.254.132/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.30/192.168.254.130/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.31/192.168.254.131/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.41/192.168.254.141/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.42/192.168.254.142/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.71/192.168.254.171/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.10/192.168.254.110/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.20/192.168.254.120/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.80/192.168.254.180/g' {} \;
+
+# net_a
+grep -r "192.168.1.70" .
+grep -r "192.168.1.253" .
+grep -r "192.168.1.40" .
+grep -r "192.168.1.32" .
+grep -r "192.168.1.30" .
+grep -r "192.168.1.31" .
+grep -r "192.168.1.41" .
+grep -r "192.168.1.42" .
+grep -r "192.168.1.71" .
+grep -r "192.168.1.10" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.70/192.168.1.170/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.253/192.168.1.252/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.40/192.168.1.140/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.32/192.168.1.132/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.30/192.168.1.130/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.31/192.168.1.131/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.41/192.168.1.141/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.42/192.168.1.142/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.71/192.168.1.171/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.10/192.168.1.110/g' {} \;
+
+# net_b
+grep -r "192.168.2.10" .
+grep -r "192.168.2.20" .
+grep -r "192.168.2.21" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.2.10/192.168.2.110/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.2.20/192.168.2.120/g' {} \;
+
+# net_d
+grep -r "192.168.4.20" .
+grep -r "192.168.4.80" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.4.20/192.168.4.120/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.4.80/192.168.4.180/g' {} \;
+
+#bind
+grep -r "70$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "253$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "40$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "32$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "30$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "31$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "41$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "42$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "71$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "10$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "20$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "80$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "21$(printf '\t')" /opt/OpenEPC/etc/bind
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/70\t/170\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/253\t/252\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/40\t/140\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/32\t/132\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/30\t/130\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/31\t/131\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/41\t/141\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/42\t/142\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/71\t/171\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/10\t/110\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/20\t/120\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/80\t/180\t/g' {} \;
+######################################
+
+
+- network 생성
+- flavor 생성
+- vm 생성 [dist-sourceVM, allinoneVM, internetgatewayVM]
+	* 모든 VM에 아이피 할당, root 로그인 활성화, ssh 키 배포
+
+1. dist 서버에서 각 서버 접속 방법 및 각 서버 패스워드 변경
+	1) dist-vm 에서 소스 받아서 포팅 작업 (ssh 원격 로그인)
+- dist hosts에 igw, aio vm... 등록
+sudo su
+hostname dist
+echo "dist" > /etc/hostname
+
+filename=/etc/hosts
+test -f $filename.org || cp $filename $filename.org
+rm -f $filename
+
+cat << EOF > $filename
+127.0.0.1 localhost dist
+192.168.254.70 igw
+192.168.254.253 gdb
+192.168.254.40 dhi
+192.168.254.30 pcrf
+192.168.254.31 andsf
+192.168.254.32 www
+192.168.254.41 mdf
+192.168.254.42 proxy
+192.168.254.52 ccb
+192.168.254.71 aaa
+192.168.254.10 pgw
+192.168.254.20 sgw
+192.168.254.80 mme
+192.168.254.90 enb
+192.168.254.21 epdg
+192.168.254.100 ue
+192.168.254.180 aio
+EOF
+
+- 각 서버의 패스워드 변경
+ssh ubuntu@igw ==> "접속시 ubuntu@아이피 로 나오는 경우 sudo reboot"
+...
+
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.org
+sudo sed -i 's/archive.ubuntu.com/kr.archive.ubuntu.com/g' /etc/apt/sources.list
+sudo apt-get update
+sudo apt-get install expect -y
+
+CURR_PASSWD=ubuntu
+CH_PASSWD=ckddmlrhks401!
+SECURE_PASSWD=$(expect -c "
+ 
+set timeout 10
+spawn passwd
+ 
+expect \"(current) UNIX password:\"
+send \"$CURR_PASSWD\r\"
+ 
+expect \"Enter new UNIX password:\"
+send \"$CH_PASSWD\r\"
+ 
+expect \"Retype new UNIX password:\"
+send \"$CH_PASSWD\r\"
+
+expect eof
+")
+ 
+echo "$SECURE_PASSWD"
+
+SECURE_PASSWD=$(expect -c "
+ 
+set timeout 10
+spawn sudo passwd
+ 
+expect \"Enter new UNIX password:\"
+send \"$CH_PASSWD\r\"
+ 
+expect \"Retype new UNIX password:\"
+send \"$CH_PASSWD\r\"
+
+expect eof
+")
+ 
+echo "$SECURE_PASSWD"
+
+sudo sed -i s/PermitRootLogin\ without-password/PermitRootLogin\ yes/g /etc/ssh/sshd_config
+sudo service ssh restart
+
+
+- 자동로그인을 위해 ssh 키 배포
+ssh-keygen
+ssh-copy-id igw
+ssh-copy-id gdb
+ssh-copy-id dhi
+ssh-copy-id pcrf
+ssh-copy-id andsf
+ssh-copy-id www
+ssh-copy-id mdf
+ssh-copy-id proxy
+ssh-copy-id ccb
+ssh-copy-id aaa
+ssh-copy-id pgw
+ssh-copy-id sgw
+ssh-copy-id mme
+ssh-copy-id enb
+ssh-copy-id epdg
+ssh-copy-id ue
+ssh-copy-id aio
+
+
+
+		- apt-get의 source 주속 변경(optional)
+		# 각 vm ssh 접속 해서 아래의 sources.list 변경
+cp /etc/apt/sources.list /etc/apt/sources.list.org
+sed -i 's/archive.ubuntu.com/ftp.daum.net/g' /etc/apt/sources.list
+sed -i 's/security.ubuntu.com/ftp.daum.net/g' /etc/apt/sources.list
+
+cp /etc/apt/sources.list.org /etc/apt/sources.list
+sed -i 's/archive.ubuntu.com/kr.archive.ubuntu.com/g' /etc/apt/sources.list
+
+		- source download
+		$apt-get -y install subversion xorg firefox
+		$svn co --username 아이디 https://extsvnsrv.corenetdynamics.com/svn/SSU/setup/OpenEPCRel5 /opt/OpenEPC
+
+		- script update
+		Z:\06.DEV_SOURCE\OPENEPC\OpenEPC-최종\epc_script.tar.gz ==> dist-vm의 /opt/OpenEPC
+		$cd /opt/OpenEPC
+		$tar xvfz epc_script.tar.gz
+		$cp -r /opt/OpenEPC/dcn/modules /opt/OpenEPC/wharf
+
+		- script igw 설치 (dist-vm 에 루트 로그인)
+		$cd /opt/OpenEPC
+		$./configure.sh igw		# interface 정보가 변경된 경우 리부팅됨 이후 한번더 스크립트 실행
+		$./configure.sh igw
+
+		- 설치가 완료되면 igw 접속 하여 nic mtu 변경, mgmt 인터페이스의 lro on, gro off (sriov 인터페이스 경우만 할 것--하지 말것!!!)
+		- 설치 순서 (igw, allinone or database, dhi, anymodule ~)
+		$ssh igw
+		$vi /etc/rc.local
+		#ip link set mtu 9000 dev mgmt
+		#ip link set mtu 9000 dev net_a
+		##ethtool -K mgmt lro on
+		##ethtool -K mgmt gro off
+
+		- dns 주소 변경 (다른부분을 지우고 아래 내용만 작성)
+		$echo "nameserver 192.168.11.1" /etc/resolve.conf
+
+		$reboot
+
+		- script allinone 설치 (dist-vm 에 루트 로그인)
+		$cd /opt/OpenEPC
+		$./configure.sh allinone		# interface 정보가 변경된 경우 리부팅됨 이후 한번더 스크립트 실행
+		$./configure.sh allinone
+
+		- dns 주소 변경
+		$vi /opt/OpenEPC/etc/resolv.conf
+		8.8.8.8 ==> 제거
+
+		- bind9 restart
+		$service bind9 restart
+
+		- network interface 수정 (DUP packet 방지)
+		vi /etc/network/interfaces
+		# up ....
+		# down ....
+
+		vi /etc/rc.local
+		#ethtool -K net_a gro off
+		#ethtool -K net_b gro off
+	
+	
+	3) aio 작업
+		- host (오스픈택 설치된 서버) 에서 aio-mgnt 인터페이스 MAC 정보 검색
+		$source ~/admin-openrc.sh
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-mgmt / {print $2}')
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-net_a / {print $2}')
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-net_b / {print $2}')
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-flat_net_d / {print $2}')
+
+		- aio vm 로그인 (openstack 콘솔)-암호변경, 루트계정 활성화, 네트워크 설정
+			- ubuntu 암호 변경
+			$passwd ubuntu
+			
+			- root 계정 활성화
+			$sudo passwd
+			$sudo sed -i s/PermitRootLogin\ without-password/PermitRootLogin\ yes/g /etc/ssh/sshd_config
+			or
+			$sudo vi /etc/ssh/sshd_config
+				PermitRootLogin without-password ==> yes
+			$sudo service ssh restart
+			
+			- networks 설정 (뉴트론에서 검색한 aio-mgmt 인터페이스 찾기)
+			$sudo su
+			$ifconfig -a
+			$vi /etc/network/interfaces.d/eth1.cfg
+			auto eth1
+			iface eth1 inet static
+			address 192.168.254.41/24
+			gateway 192.168.254.1
+			dns-nameservers 192.168.11.1
+
+			$ifdown eth1 && ifup eth1
+			$ping 192.168.254.1
+
+
+######################################
+## Howto disable OpenStack firewalls (don'n need job)
+######################################
+vi /etc/neutron/plugins/ml2/ml2_conf.ini
+[securitygroup]
+enable_security_group = False
+firewall_driver = neutron.agent.firewall.NoopFirewallDriver
+
+vi /etc/nova/nova.conf
+[DEFAULT]
+security_group_api = nova
+firewall_driver = nova.virt.firewall.NoopFirewallDriver
+
+## epc svn
+svn co --username 아이디 https://extsvnsrv.corenetdynamics.com/svn/SSU/setup/OpenEPCRel5 /opt/OpenEPC
+
+## ubuntu chrome
+wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+sudo sh -c 'echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+sudo apt-get update
+sudo apt-get install google-chrome-stable
+google-chrome-stable --user-data-dir=/root/chrome
+
+## nova instance resize
+nova resize aio m1.aio-epc
+
+
+## epc code 수정(중요!!!)
+# mme lock 문제 수정
+/opt/OpenEPC/wharf/modules/mme/enb.c
+/opt/OpenEPC/wharf/modules/mme/session.c
+
+# sgw lock 문제 수정
+/opt/OpenEPC/wharf/modules/sgw_s11s4/gtp.c
+
+
+######
+# packet mtu check
+apt-get install tshark
+tshark -i net_a -e frame.len -Tfields
+
+
+
+
+service nova-cert restart
+service nova-consoleauth restart
+service nova-scheduler restart
+service nova-conductor restart
+service nova-novncproxy restart
+
+service nova-compute restart
+service nova-api restart
+
+service neutron-server restart
+service neutron-l3-agent restart
+service neutron-dhcp-agent restart
+service neutron-metadata-agent restart
+service openvswitch-switch restart
+service neutron-plugin-openvswitch-agent restart
+
+service eswitchd restart
+service neutron-plugin-mlnx-agent restart
+
+
+tail -f /var/log/neutron/*.log
+
+echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+echo "net.ipv4.conf.all.rp_filter=0" >> /etc/sysctl.conf
+echo "net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf
+
+
+
+ip route del default via 192.168.254.70 dev mgmt
+
+neutron port-update 03713758-ccdc-4f9b-b534-7edeebd41785 \
+--fixed-ips subnet_id=c4136c57-66a0-4174-bf94-b3933e4929da,ip_address=192.168.3.100
+
+
+
+ip route add 192.168.3.0/24 via 192.168.1.10 dev net_a
+
+ip route delete 192.168.3.0/24
+
+
+
+
+
+#####################################################################################
+./aaa.attach.sh*
+./andsf.attach.sh*
+./bf.attach.sh*
+./cdf.attach.sh*
+./cgf.attach.sh*
+./hss.attach.sh*
+./icscf.attach.sh*
+./mdf.attach.sh*
+./mdf_fileplay.attach.sh*
+./mdf_trigger.attach.sh*
+./mdf_webcam.attach.sh*
+./pcrf.attach.sh*
+./pcscf.attach.sh*
+./pcscf.pcc.attach.sh*
+./scscf.attach.sh*
+./squid_rx_client.attach.sh*
+./squid_rx_logs.attach.sh*
+
+
+
+
+
+
+
+#####################################################################################
+neutron net-delete e1000v2_113.x
+neutron net-create e1000v2_113.x
+neutron subnet-create --name e1000v2_sub_113.x \
+--gateway 192.168.113.1 \
+--allocation-pool start=192.168.113.2,end=192.168.113.254 \
+e1000v2_113.x 192.168.113.0/24
+
+nova delete dist3
+neutron port-delete dist3_113-mgmt
+neutron port-create e1000v2_113.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v2_sub_113.x,ip_address=192.168.113.3 \
+--name dist3_113-mgmt
+nova boot --flavor=m1.dist --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ dist3_113-mgmt / {print $2}') \
+dist3
+
+
+nova delete dist4
+neutron port-delete dist4_113-mgmt
+neutron port-create e1000v2_113.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=e1000v2_sub_113.x,ip_address=192.168.113.4 \
+--name dist4_113-mgmt
+nova boot --flavor=m1.dist --image=ubuntu-server-14.04_e1000 \
+--nic port-id=$(neutron port-list | awk '/ dist4_113-mgmt / {print $2}') \
+dist4
+
+
+service neutron-sriov-agent restart
+service neutron-server restart
+service neutron-l3-agent restart
+service neutron-dhcp-agent restart
+service neutron-metadata-agent restart
+service neutron-openvswitch-agent restart
+

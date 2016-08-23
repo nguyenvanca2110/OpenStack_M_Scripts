@@ -1,0 +1,1356 @@
+#######################################################
+## install jperf
+cd ~
+wget -c http://fs2.download82.com/software/bbd8ff9dba17080c0c121804efbd61d5/jperf/jperf-2.0.2.zip
+unzip jperf-2.0.2.zip
+cd jperf-2.0.2
+chmod a+x jperf.sh
+
+sed -i 's/archive.ubuntu.com/ftp.daum.net/g' /etc/apt/sources.list
+sudo apt-get install subversion git
+sudo apt-get install python-pip
+sudo pip install speedtest-cli
+sudo pip install speedtest-cli --upgrade
+
+#######################################################
+## pgw routing
+ip route add 192.168.3.0/24 dev net_b
+ip route del 192.168.3.0/24
+
+#######################################################
+## find instance_name for instance
+nova show \
+$(
+nova list --tenant $(openstack project show virtio \
+| awk '/ id / {print $4}') \
+| awk '/ virtio-pgw / {print $2}'
+) | grep instance_name
+
+## find interface list for vm
+##virsh domiflist <instance_name>
+## virtio-pgw gro off : net_a and net_b
+virsh domiflist instance-0000009e
+ethtool -K tap08b2c79a-37 gro off tso off
+ethtool -K tap780ba2db-8f gro off tso off
+ethtool --offload tap08b2c79a-37 gso off tso off sg off gro off
+ethtool --offload tap780ba2db-8f gso off tso off sg off gro off
+
+## virtio-enb
+virsh domiflist instance-000000a1
+ethtool -K tapc98b2df0-44 gro off tso off
+ethtool -K tap70680dbc-a5 gro off tso off
+ethtool --offload tapc98b2df0-44 gso off tso off sg off gro off
+ethtool --offload tap70680dbc-a5 gso off tso off sg off gro off
+
+## virtio-sgw
+virsh domiflist instance-0000009f
+ethtool -K tap322c41a8-69 gro off tso off
+ethtool -K tapb662fef7-d9 gro off tso off
+
+## virtio-igw
+virsh domiflist instance-0000009b
+ethtool -K tap61d4a522-2b gro off tso off
+
+
+## iperf3
+Manual installation of iperf3 3.1.3 64 bits : 
+1.sudo apt-get remove iperf iperf3 libiperf0
+2.sudo wget -O /usr/lib/libiperf.so.0 https://iperf.fr/download/ubuntu/libiperf.so.0_3.1.3
+3.sudo wget -O /usr/bin/iperf3 https://iperf.fr/download/ubuntu/iperf3_3.1.3
+4.sudo chmod +x /usr/bin/iperf3
+5.If iperf3 does not work : sudo apt-get install lib32z1
+
+## on host
+ethtool --offload eth6 gso off tso off sg off gro off
+
+#######################################################
+## macvtap (controller:eth2, compute:eth3)
+1. configuration
+apt-get install neutron-macvtap-agent
+
+cp /etc/neutron/plugins/ml2/macvtap_agent.ini /etc/neutron/plugins/ml2/macvtap_agent.ini.org
+
+vi /etc/neutron/plugins/ml2/macvtap_agent.ini
+[DEFAULT]
+[agent]
+[macvtap]
+physical_interface_mappings = ext_br-macvtap:eth3
+
+[securitygroup]
+enable_security_group = false
+firewall_driver = neutron.agent.firewall.NoopFirewallDriver
+
+vi /etc/neutron/plugins/ml2/ml2_conf.ini
+[ml2]
+...
+mechanism_drivers = ...,macvtap
+
+[ml2_type_vlan]
+network_vlan_ranges = ...,ext_br-macvtap:1200:1299
+
+[securitygroup]
+...
+firewall_driver = neutron.agent.firewall.NoopFirewallDriver
+#firewall_driver = iptables
+
+2. net-create
+==> check vlna id : ????
+
+3. create ethernet vlan
+vconfig add eth2 1294
+ifconfig eth2.1294 up
+
+3. add br-int port (for route)
+3.1) check ovs tag by route gatway interface
+echo qr-$(neutron router-port-list ext_vepc | awk '/192.168.254.1/ {print $2}' | cut -c1-11) 
+print==> qr-????-??
+or 
+ip netns exec qrouter-$(neutron router-list | awk '/ ext_vepc / {print $2}') ifconfig
+print==> qr-????-?? Link ....
+
+ovs-vsctl show 
+qr-????-??
+  .... tag=??
+
+3.2) add port
+ovs-vsctl del-port br-int eth2.1294
+ovs-vsctl add-port br-int eth2.1294 tag=2
+
+
+## change library (macvtap but only support virtio, model applied by the hw_vif_model)
+## dont't need
+vi /usr/lib/python2.7/dist-packages/nova/virt/libvirt/vif.py
+def get_config_macvtap(.....
+conf = self.get_base_config(instance, vif, image_meta,
+                                    inst_type, virt_type)
+model = conf.model
+.....
+.....
+
+conf.model = model
+return conf
+
+service nova-compute restart
+service neutron-macvtap-agent restart
+
+#######################################################
+## virtio for raw-socket (root mode)
+## ref : http://lagopus.github.io/lagopus-book/en/html/installation-kvm.html
+apt-get -y install build-essential libexpat-dev libgmp-dev \
+libssl-dev libpcap-dev byacc flex git \
+python-dev python-pastedeploy python-paste python-twisted
+
+cd ~/; git clone https://github.com/lagopus/lagopus.git
+cd lagopus
+./configure --disable-dpdk
+make
+make install
+mkdir /usr/local/etc/lagopus/
+cp misc/examples/lagopus.dsl /usr/local/etc/lagopus/lagopus.dsl
+
+## case in pgw 
+vi /usr/local/etc/lagopus/lagopus.dsl
+channel channel01 create -dst-addr 127.0.0.1 -protocol tcp
+controller controller01 create -channel channel01 -role equal -connection-type main
+interface interface01 create -type ethernet-rawsock -device net_a
+interface interface02 create -type ethernet-rawsock -device net_b
+port port01 create -interface interface01
+port port02 create -interface interface02
+bridge bridge01 create -controller controller01 -port port01 1 -port port02 2 -dpid 0x1
+bridge bridge01 enable
+
+lagopus
+lagosh
+show interface
+
+vi /etc/rc.local
+/usr/local/sbin/lagopus
+
+###################################################
+# enodeb
+sysctl -w net.ipv6.conf.all.forwarding=1
+ethtool -K net_c gro off
+
+###################################################
+# networks performance
+vi /etc/default/qemu-kvm
+VHOST_NET_ENABLED=1
+KVM_HUGEPAGES=1
+
+
+###################################################
+# db script change
+mysql -h 192.168.254.253 -u root pdn_ops_db
+update pdn set intf='eth1' where id=1 and name='default_apn'
+
+
+
+#######################################
+# EPC_IP and VM create (controller node에서 작업)
+#######################################
+
+#######################################
+### create networks 
+#######################################
+neutron net-delete virtio_254.x
+neutron net-create virtio_254.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-sriov
+neutron subnet-create --name virtio_sub_254.x \
+--gateway 192.168.254.1 \
+--allocation-pool start=192.168.254.2,end=192.168.254.254 \
+--dns-nameserver 8.8.8.8 \
+virtio_254.x 192.168.254.0/24
+
+neutron net-delete virtio_1.x
+neutron net-create virtio_1.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name virtio_sub_1.x \
+--disable-dhcp \
+--gateway 192.168.1.1 \
+--allocation-pool start=192.168.1.2,end=192.168.1.254 \
+virtio_1.x 192.168.1.0/24
+
+neutron net-delete virtio_2.x
+neutron net-create virtio_2.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name virtio_sub_2.x \
+--disable-dhcp \
+--gateway 192.168.2.1 \
+--allocation-pool start=192.168.2.2,end=192.168.2.254 \
+virtio_2.x 192.168.2.0/24
+
+neutron net-delete virtio_3.x
+neutron net-create virtio_3.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name virtio_sub_3.x \
+--disable-dhcp \
+--gateway 192.168.3.1 \
+--allocation-pool start=192.168.3.2,end=192.168.3.254 \
+virtio_3.x 192.168.3.0/24
+
+neutron net-delete virtio_4.x
+neutron net-create virtio_4.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-macvtap
+neutron subnet-create --name virtio_sub_4.x \
+--disable-dhcp \
+--gateway 192.168.4.1 \
+--allocation-pool start=192.168.4.2,end=192.168.4.254 \
+virtio_4.x 192.168.4.0/24
+
+neutron net-delete virtio_101.x
+neutron net-create virtio_101.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-sriov
+neutron subnet-create --name virtio_sub_101.x \
+--disable-dhcp \
+--gateway 192.168.101.1 \
+--allocation-pool start=192.168.101.2,end=192.168.101.254 \
+virtio_101.x 192.168.101.0/24
+
+neutron net-delete virtio_102.x
+neutron net-create virtio_102.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-sriov
+neutron subnet-create --name virtio_sub_102.x \
+--disable-dhcp \
+--gateway 192.168.102.1 \
+--allocation-pool start=192.168.102.2,end=192.168.102.254 \
+virtio_102.x 192.168.102.0/24
+
+neutron net-delete virtio_103.x
+neutron net-create virtio_103.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-sriov
+neutron subnet-create --name virtio_sub_103.x \
+--disable-dhcp \
+--gateway 192.168.103.1 \
+--allocation-pool start=192.168.103.2,end=192.168.103.254 \
+virtio_103.x 192.168.103.0/24
+
+neutron net-delete virtio_104.x
+neutron net-create virtio_104.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-sriov
+neutron subnet-create --name virtio_sub_104.x \
+--disable-dhcp \
+--gateway 192.168.104.1 \
+--allocation-pool start=192.168.104.2,end=192.168.104.254 \
+virtio_104.x 192.168.104.0/24
+
+#######################################
+### allocate fixed ip for VM
+#######################################
+nova flavor-list
+nova flavor-create --is-public true m1.epc auto 4096 20 2 --rxtx-factor 1
+nova flavor-create --is-public true m1.aio auto 16384 40 4 --rxtx-factor 1
+nova flavor-create --is-public true m1.dist auto 8192 40 2 --rxtx-factor 1
+
+####### dist #######
+nova delete virtio-dist
+neutron port-delete virtio-dist-mgmt
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.254 \
+--name virtio-dist-mgmt
+nova boot --flavor=m1.dist --image=dist_snap \
+--nic port-id=$(neutron port-list | awk '/ virtio-dist-mgmt / {print $2}') \
+virtio-dist
+
+nova interface-detach virtio-dist $(neutron port-list | awk '/ virtio-dist-mgmt / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ virtio-dist-mgmt / {print $2}') virtio-dist
+
+nova delete virtio-igw
+neutron port-delete virtio-igw-mgmt
+neutron port-delete virtio-igw-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.70 \
+--name virtio-igw-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.70 \
+--name virtio-igw-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-igw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-igw-net_a / {print $2}') \
+virtio-igw
+
+nova delete virtio-gdb
+neutron port-delete virtio-gdb-mgmt
+neutron port-delete virtio-gdb-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.253 \
+--name virtio-gdb-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.253 \
+--name virtio-gdb-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-gdb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-gdb-net_a / {print $2}') \
+virtio-gdb
+
+####### enabler #######
+nova delete virtio-mdf
+neutron port-delete virtio-mdf-mgmt
+neutron port-delete virtio-mdf-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.41 \
+--name virtio-mdf-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.41 \
+--name virtio-mdf-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-mdf-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-mdf-net_a / {print $2}') \
+virtio-mdf
+
+nova delete virtio-dns-hss-img
+neutron port-delete virtio-dhi-mgmt
+neutron port-delete virtio-dhi-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.40 \
+--name virtio-dhi-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.40 \
+--name virtio-dhi-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-dhi-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-dhi-net_a / {print $2}') \
+virtio-dns-hss-img
+
+nova delete virtio-andsf
+neutron port-delete virtio-andsf-mgmt
+neutron port-delete virtio-andsf-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.31 \
+--name virtio-andsf-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.31 \
+--name virtio-andsf-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-andsf-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-andsf-net_a / {print $2}') \
+virtio-andsf
+
+nova delete virtio-http-proxy
+neutron port-delete virtio-proxy-mgmt
+neutron port-delete virtio-proxy-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.42 \
+--name virtio-proxy-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.42 \
+--name virtio-proxy-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-proxy-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-proxy-net_a / {print $2}') \
+virtio-http-proxy
+
+nova delete virtio-pcrf
+neutron port-delete virtio-pcrf-mgmt
+neutron port-delete virtio-pcrf-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.30 \
+--name virtio-pcrf-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.30 \
+--name virtio-pcrf-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-pcrf-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-pcrf-net_a / {print $2}') \
+virtio-pcrf
+
+nova delete virtio-aaa
+neutron port-delete virtio-aaa-mgmt
+neutron port-delete virtio-aaa-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.71 \
+--name virtio-aaa-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.71 \
+--name virtio-aaa-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-aaa-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-aaa-net_a / {print $2}') \
+virtio-aaa
+
+nova delete virtio-www
+neutron port-delete virtio-www-mgmt
+neutron port-delete virtio-www-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.32 \
+--name virtio-www-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.32 \
+--name virtio-www-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-www-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-www-net_a / {print $2}') \
+virtio-www
+
+nova delete virtio-ccb
+neutron port-delete virtio-ccb-mgmt
+neutron port-delete virtio-ccb-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.50 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.51 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.52 \
+--name virtio-ccb-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.50 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.51 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.52 \
+--name virtio-ccb-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-ccb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-ccb-net_a / {print $2}') \
+virtio-ccb
+
+####### enablers #######
+nova delete virtio-enablers
+neutron port-delete virtio-enablers-mgmt
+neutron port-delete virtio-enablers-net_a
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.40 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.32 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.30 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.31 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.41 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.42 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.50 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.51 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.52 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.71 \
+--name virtio-enablers-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.40 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.32 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.30 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.31 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.41 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.42 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.50 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.51 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.52 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.71 \
+--name virtio-enablers-net_a
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-enablers-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-enablers-net_a / {print $2}') \
+virtio-enablers
+
+####### pgw #######
+nova delete virtio-pgw
+neutron port-delete virtio-pgw-mgmt
+neutron port-delete virtio-pgw-net_a
+neutron port-delete virtio-pgw-net_b
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.10 \
+--name virtio-pgw-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.10 \
+--name virtio-pgw-net_a
+neutron port-create virtio_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_2.x,ip_address=192.168.2.10 \
+--name virtio-pgw-net_b
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-pgw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-pgw-net_a / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-pgw-net_b / {print $2}') \
+virtio-pgw
+
+####### sgw (mgmt:eth0, net_b:eth1, net_d:eth2)#######
+nova delete virtio-sgw
+neutron port-delete virtio-sgw-mgmt
+neutron port-delete virtio-sgw-net_b
+neutron port-delete virtio-sgw-net_d
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.20 \
+--name virtio-sgw-mgmt
+neutron port-create virtio_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_2.x,ip_address=192.168.2.20 \
+--name virtio-sgw-net_b
+neutron port-create virtio_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_4.x,ip_address=192.168.4.20 \
+--name virtio-sgw-net_d
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-sgw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-sgw-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-sgw-net_d / {print $2}') \
+virtio-sgw
+
+neutron port-delete flat-sgw_net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.20 \
+--name flat-sgw_net_d
+nova interface-detach virtio-sgw $(neutron port-list | awk '/ flat-sgw_net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-sgw_net_d / {print $2}') virtio-sgw
+
+####### mme (mgmt:eth0, net_d:eth1)#######
+nova delete virtio-mme
+neutron port-delete virtio-mme-mgmt
+neutron port-delete virtio-mme-net_d
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.80 \
+--name virtio-mme-mgmt
+neutron port-create virtio_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_4.x,ip_address=192.168.4.80 \
+--name virtio-mme-net_d
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-mme-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-mme-net_d / {print $2}') \
+virtio-mme
+
+neutron port-delete flat-mme-net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.80 \
+--name flat-mme-net_d
+nova interface-detach virtio-mme $(neutron port-list | awk '/ flat-mme-net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-mme-net_d / {print $2}') virtio-mme
+
+####### enodeb (mgmt:eth0, net_c:eth1, net_d:eth2)#######
+nova delete virtio-enb
+neutron port-delete virtio-enb-mgmt
+neutron port-delete virtio-enb-net_c
+neutron port-delete virtio-enb-net_d
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.90 \
+--name virtio-enb-mgmt
+neutron port-create virtio_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_4.x,ip_address=192.168.4.90 \
+--name virtio-enb-net_d
+neutron port-create virtio_3.x \
+--port_security_enabled=False \
+--binding:vnic-type direct \
+--fixed-ip subnet_id=virtio_sub_3.x,ip_address=192.168.3.29 \
+--name virtio-enb-net_c
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-enb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-enb-net_d / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-enb-net_c / {print $2}') \
+virtio-enb
+
+neutron port-delete flat-enb-net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.90 \
+--name flat-enb-net_d
+nova interface-detach virtio-enb $(neutron port-list | awk '/ flat-enb-net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-enb-net_d / {print $2}') virtio-enb
+
+####### epdg (net_c:eth0, mgmt:eth1, net_b:eth2)#######
+nova delete virtio-epdg
+neutron port-delete virtio-epdg-mgmt
+neutron port-delete virtio-epdg-net_b
+neutron port-delete virtio-epdg-net_c
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.21 \
+--name virtio-epdg-mgmt
+neutron port-create virtio_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_2.x,ip_address=192.168.2.21 \
+--name virtio-epdg-net_b
+neutron port-create virtio_3.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_3.x,ip_address=192.168.3.21 \
+--name virtio-epdg-net_c
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-epdg-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-epdg-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-epdg-net_c / {print $2}') \
+virtio-epdg
+
+neutron port-delete flat-epdg-net_c
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_3.x,ip_address=192.168.3.21 \
+--name flat-epdg-net_c
+nova interface-detach virtio-epdg $(neutron port-list | awk '/ flat-epdg-net_c / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-epdg-net_c / {print $2}') virtio-epdg
+
+####### ue #######
+nova delete virtio-ue
+neutron port-delete virtio-ue-mgmt
+neutron port-delete virtio-ue-an_gprs
+neutron port-delete virtio-ue-an_umts
+neutron port-delete virtio-ue-an_wifi
+neutron port-delete virtio-ue-an_wimax
+neutron port-delete virtio-ue-an_lte
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.100 \
+--name virtio-ue-mgmt
+neutron port-create virtio_101.x \
+--name virtio-ue-an_gprs
+neutron port-create virtio_102.x \
+--name virtio-ue-an_umts
+neutron port-create virtio_103.x \
+--name virtio-ue-an_wifi
+neutron port-create virtio_104.x \
+--name virtio-ue-an_wimax
+neutron port-create virtio_3.x \
+--port_security_enabled=False \
+--binding:vnic-type direct \
+--fixed-ip subnet_id=virtio_sub_3.x,ip_address=192.168.3.100 \
+--name virtio-ue-an_lte
+nova boot --flavor=m1.epc --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-ue-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-ue-an_gprs / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-ue-an_umts / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-ue-an_wifi / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-ue-an_wimax / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-ue-an_lte / {print $2}') \
+virtio-ue
+
+######################################
+## allinone
+######################################
+nova delete virtio-aio
+neutron port-delete virtio-aio-mgmt
+neutron port-delete virtio-aio-net_a
+neutron port-delete virtio-aio-net_b
+neutron port-delete virtio-aio-net_d
+neutron port-create virtio_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.153 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.15 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.25 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.35 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.36 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.37 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.45 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.46 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.47 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.55 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.56 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.57 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.76 \
+--fixed-ip subnet_id=virtio_sub_254.x,ip_address=192.168.254.85 \
+--name virtio-aio-mgmt
+neutron port-create virtio_1.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.153 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.15 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.35 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.36 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.37 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.45 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.46 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.47 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.55 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.56 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.57 \
+--fixed-ip subnet_id=virtio_sub_1.x,ip_address=192.168.1.76 \
+--name virtio-aio-net_a
+neutron port-create virtio_2.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_2.x,ip_address=192.168.2.15 \
+--fixed-ip subnet_id=virtio_sub_2.x,ip_address=192.168.2.25 \
+--name virtio-aio-net_b
+neutron port-create virtio_4.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=virtio_sub_4.x,ip_address=192.168.4.25 \
+--fixed-ip subnet_id=virtio_sub_4.x,ip_address=192.168.4.85 \
+--name virtio-aio-net_d
+nova boot --flavor=m1.aio --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ virtio-aio-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-aio-net_a / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-aio-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ virtio-aio-net_d / {print $2}') \
+virtio-aio
+
+neutron port-delete flat-aio_net_d
+neutron port-create flat \
+--port_security_enabled=False \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.25 \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.85 \
+--name flat-aio_net_d
+nova interface-detach virtio-aio $(neutron port-list | awk '/ flat-aio_net_d / {print $2}')
+nova interface-attach --port-id $(neutron port-list | awk '/ flat-aio_net_d / {print $2}') virtio-aio
+
+
+#### port change
+neutron port-update \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.243 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.110 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.120 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.130 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.131 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.132 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.140 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.141 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.142 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.150 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.151 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.152 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.171 \
+--fixed-ip subnet_id=sub_254.x,ip_address=192.168.254.180 \
+$(neutron port-list | awk '/ aio-mgmt / {print $2}')
+
+neutron port-update \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.243 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.110 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.130 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.131 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.132 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.140 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.141 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.142 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.150 \
+--fixed-ip subnet_id=sub_1.x,ip_address=192.168.1.171 \
+$(neutron port-list | awk '/ aio-net_a / {print $2}')
+
+neutron port-update \
+--fixed-ip subnet_id=sub_2.x,ip_address=192.168.2.110 \
+--fixed-ip subnet_id=sub_2.x,ip_address=192.168.2.120 \
+$(neutron port-list | awk '/ aio-net_b / {print $2}')
+
+neutron port-update \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.120 \
+--fixed-ip subnet_id=flat_4.x,ip_address=192.168.4.180 \
+$(neutron port-list | awk '/ aio-flat_net_d / {print $2}')
+
+
+######################################
+# 아이피 변경
+mgmt
+grep -r "192.168.254.70" .
+grep -r "192.168.254.253" .
+grep -r "192.168.254.40" .
+grep -r "192.168.254.32" .
+grep -r "192.168.254.30" .
+grep -r "192.168.254.31" .
+grep -r "192.168.254.41" .
+grep -r "192.168.254.42" .
+grep -r "192.168.254.71" .
+grep -r "192.168.254.10" .
+grep -r "192.168.254.20" .
+grep -r "192.168.254.80" .
+grep -r "192.168.254.21" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.70/192.168.254.170/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.253/192.168.254.252/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.40/192.168.254.140/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.32/192.168.254.132/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.30/192.168.254.130/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.31/192.168.254.131/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.41/192.168.254.141/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.42/192.168.254.142/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.71/192.168.254.171/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.10/192.168.254.110/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.20/192.168.254.120/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.254.80/192.168.254.180/g' {} \;
+
+# net_a
+grep -r "192.168.1.70" .
+grep -r "192.168.1.253" .
+grep -r "192.168.1.40" .
+grep -r "192.168.1.32" .
+grep -r "192.168.1.30" .
+grep -r "192.168.1.31" .
+grep -r "192.168.1.41" .
+grep -r "192.168.1.42" .
+grep -r "192.168.1.71" .
+grep -r "192.168.1.10" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.70/192.168.1.170/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.253/192.168.1.252/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.40/192.168.1.140/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.32/192.168.1.132/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.30/192.168.1.130/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.31/192.168.1.131/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.41/192.168.1.141/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.42/192.168.1.142/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.71/192.168.1.171/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.1.10/192.168.1.110/g' {} \;
+
+# net_b
+grep -r "192.168.2.10" .
+grep -r "192.168.2.20" .
+grep -r "192.168.2.21" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.2.10/192.168.2.110/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.2.20/192.168.2.120/g' {} \;
+
+# net_d
+grep -r "192.168.4.20" .
+grep -r "192.168.4.80" .
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.4.20/192.168.4.120/g' {} \;
+find /opt/OpenEPC.temp -exec sed -i 's/192.168.4.80/192.168.4.180/g' {} \;
+
+#bind
+grep -r "70$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "253$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "40$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "32$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "30$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "31$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "41$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "42$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "71$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "10$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "20$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "80$(printf '\t')" /opt/OpenEPC/etc/bind
+grep -r "21$(printf '\t')" /opt/OpenEPC/etc/bind
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/70\t/170\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/253\t/252\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/40\t/140\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/32\t/132\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/30\t/130\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/31\t/131\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/41\t/141\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/42\t/142\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/71\t/171\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/10\t/110\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/20\t/120\t/g' {} \;
+find /opt/OpenEPC.temp/etc/bind -exec sed -i 's/80\t/180\t/g' {} \;
+######################################
+
+
+- network 생성
+- flavor 생성
+- vm 생성 [dist-sourceVM, allinoneVM, internetgatewayVM]
+	* 모든 VM에 아이피 할당, root 로그인 활성화, ssh 키 배포
+
+1. dist 서버에서 각 서버 접속 방법 및 각 서버 패스워드 변경
+	1) dist-vm 에서 소스 받아서 포팅 작업 (ssh 원격 로그인)
+- dist hosts에 igw, aio vm... 등록
+sudo su
+hostname dist
+echo "dist" > /etc/hostname
+
+filename=/etc/hosts
+test -f $filename.org || cp $filename $filename.org
+rm -f $filename
+
+cat << EOF > $filename
+127.0.0.1 localhost
+192.168.11.203 sriov
+192.168.11.205 e1000
+192.168.11.207 rtl8193
+192.168.11.209 virtio
+192.168.254.70 igw
+192.168.254.253 gdb
+192.168.254.40 enablers
+192.168.254.10 pgw
+192.168.254.20 sgw
+192.168.254.80 mme
+192.168.254.90 enb
+192.168.254.100 ue
+EOF
+
+- 각 서버의 패스워드 변경
+ssh ubuntu@igw ==> "접속시 ubuntu@아이피 로 나오는 경우 sudo reboot"
+...
+
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.org
+sudo sed -i 's/archive.ubuntu.com/kr.archive.ubuntu.com/g' /etc/apt/sources.list
+sudo apt-get update
+sudo apt-get install expect -y
+
+CURR_PASSWD=ubuntu
+CH_PASSWD=ckddmlrhks401!
+SECURE_PASSWD=$(expect -c "
+ 
+set timeout 10
+spawn passwd
+ 
+expect \"(current) UNIX password:\"
+send \"$CURR_PASSWD\r\"
+ 
+expect \"Enter new UNIX password:\"
+send \"$CH_PASSWD\r\"
+ 
+expect \"Retype new UNIX password:\"
+send \"$CH_PASSWD\r\"
+
+expect eof
+")
+ 
+echo "$SECURE_PASSWD"
+
+SECURE_PASSWD=$(expect -c "
+ 
+set timeout 10
+spawn sudo passwd
+ 
+expect \"Enter new UNIX password:\"
+send \"$CH_PASSWD\r\"
+ 
+expect \"Retype new UNIX password:\"
+send \"$CH_PASSWD\r\"
+
+expect eof
+")
+ 
+echo "$SECURE_PASSWD"
+
+sudo sed -i s/PermitRootLogin\ without-password/PermitRootLogin\ yes/g /etc/ssh/sshd_config
+sudo service ssh restart
+
+
+- 자동로그인을 위해 ssh 키 배포
+ssh-keygen
+ssh-copy-id igw
+ssh-copy-id gdb
+ssh-copy-id dhi
+ssh-copy-id pcrf
+ssh-copy-id andsf
+ssh-copy-id www
+ssh-copy-id mdf
+ssh-copy-id proxy
+ssh-copy-id ccb
+ssh-copy-id aaa
+ssh-copy-id pgw
+ssh-copy-id sgw
+ssh-copy-id mme
+ssh-copy-id enb
+ssh-copy-id epdg
+ssh-copy-id ue
+ssh-copy-id aio
+
+
+
+		- apt-get의 source 주속 변경(optional)
+		# 각 vm ssh 접속 해서 아래의 sources.list 변경
+cp /etc/apt/sources.list /etc/apt/sources.list.org
+sed -i 's/archive.ubuntu.com/ftp.daum.net/g' /etc/apt/sources.list
+sed -i 's/security.ubuntu.com/ftp.daum.net/g' /etc/apt/sources.list
+
+cp /etc/apt/sources.list.org /etc/apt/sources.list
+sed -i 's/archive.ubuntu.com/kr.archive.ubuntu.com/g' /etc/apt/sources.list
+
+		- source download
+		$apt-get -y install subversion xorg firefox
+		$svn co --username 아이디 https://extsvnsrv.corenetdynamics.com/svn/SSU/setup/OpenEPCRel5 /opt/OpenEPC
+
+		- script update
+		Z:\06.DEV_SOURCE\OPENEPC\OpenEPC-최종\epc_script.tar.gz ==> dist-vm의 /opt/OpenEPC
+		$cd /opt/OpenEPC
+		$tar xvfz epc_script.tar.gz
+		$cp -r /opt/OpenEPC/dcn/modules /opt/OpenEPC/wharf
+
+		- script igw 설치 (dist-vm 에 루트 로그인)
+		$cd /opt/OpenEPC
+		$./configure.sh igw		# interface 정보가 변경된 경우 리부팅됨 이후 한번더 스크립트 실행
+		$./configure.sh igw
+
+		- 설치가 완료되면 igw 접속 하여 nic mtu 변경, mgmt 인터페이스의 lro on, gro off (sriov 인터페이스 경우만 할 것--하지 말것!!!)
+		- 설치 순서 (igw, allinone or database, dhi, anymodule ~)
+		$ssh igw
+		$vi /etc/rc.local
+		#ip link set mtu 9000 dev mgmt
+		#ip link set mtu 9000 dev net_a
+		##ethtool -K mgmt lro on
+		##ethtool -K mgmt gro off
+
+		- dns 주소 변경 (다른부분을 지우고 아래 내용만 작성)
+		$echo "nameserver 192.168.11.1" /etc/resolve.conf
+
+		$reboot
+
+		- script allinone 설치 (dist-vm 에 루트 로그인)
+		$cd /opt/OpenEPC
+		$./configure.sh allinone		# interface 정보가 변경된 경우 리부팅됨 이후 한번더 스크립트 실행
+		$./configure.sh allinone
+
+		- dns 주소 변경
+		$vi /opt/OpenEPC/etc/resolv.conf
+		8.8.8.8 ==> 제거
+
+		- bind9 restart
+		$service bind9 restart
+
+		- network interface 수정 (DUP packet 방지)
+		vi /etc/network/interfaces
+		# up ....
+		# down ....
+
+		vi /etc/rc.local
+		#ethtool -K net_a gro off
+		#ethtool -K net_b gro off
+	
+	
+	3) aio 작업
+		- host (오스픈택 설치된 서버) 에서 aio-mgnt 인터페이스 MAC 정보 검색
+		$source ~/admin-openrc.sh
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-mgmt / {print $2}')
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-net_a / {print $2}')
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-net_b / {print $2}')
+		$neutron port-show -F mac_address $(neutron port-list | awk '/ aio-flat_net_d / {print $2}')
+
+		- aio vm 로그인 (openstack 콘솔)-암호변경, 루트계정 활성화, 네트워크 설정
+			- ubuntu 암호 변경
+			$passwd ubuntu
+			
+			- root 계정 활성화
+			$sudo passwd
+			$sudo sed -i s/PermitRootLogin\ without-password/PermitRootLogin\ yes/g /etc/ssh/sshd_config
+			or
+			$sudo vi /etc/ssh/sshd_config
+				PermitRootLogin without-password ==> yes
+			$sudo service ssh restart
+			
+			- networks 설정 (뉴트론에서 검색한 aio-mgmt 인터페이스 찾기)
+			$sudo su
+			$ifconfig -a
+			$vi /etc/network/interfaces.d/eth1.cfg
+			auto eth1
+			iface eth1 inet static
+			address 192.168.254.41/24
+			gateway 192.168.254.1
+			dns-nameservers 192.168.11.1
+
+			$ifdown eth1 && ifup eth1
+			$ping 192.168.254.1
+
+
+######################################
+## Howto disable OpenStack firewalls (don'n need job)
+######################################
+vi /etc/neutron/plugins/ml2/ml2_conf.ini
+[securitygroup]
+enable_security_group = False
+firewall_driver = neutron.agent.firewall.NoopFirewallDriver
+
+vi /etc/nova/nova.conf
+[DEFAULT]
+security_group_api = nova
+firewall_driver = nova.virt.firewall.NoopFirewallDriver
+
+## epc svn
+svn co --username 아이디 https://extsvnsrv.corenetdynamics.com/svn/SSU/setup/OpenEPCRel5 /opt/OpenEPC
+
+## ubuntu chrome
+wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+sudo sh -c 'echo "deb http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+sudo apt-get update
+sudo apt-get install google-chrome-stable
+google-chrome-stable --user-data-dir=/root/chrome
+
+## nova instance resize
+nova resize aio m1.aio-epc
+
+
+## epc code 수정(중요!!!)
+# mme lock 문제 수정
+/opt/OpenEPC/wharf/modules/mme/enb.c
+/opt/OpenEPC/wharf/modules/mme/session.c
+
+# sgw lock 문제 수정
+/opt/OpenEPC/wharf/modules/sgw_s11s4/gtp.c
+
+
+######
+# packet mtu check
+apt-get install tshark
+tshark -i net_a -e frame.len -Tfields
+
+
+
+
+service nova-cert restart
+service nova-consoleauth restart
+service nova-scheduler restart
+service nova-conductor restart
+service nova-novncproxy restart
+
+service nova-compute restart
+service nova-api restart
+
+service neutron-server restart
+service neutron-l3-agent restart
+service neutron-dhcp-agent restart
+service neutron-metadata-agent restart
+service openvswitch-switch restart
+service neutron-plugin-openvswitch-agent restart
+
+service eswitchd restart
+service neutron-plugin-mlnx-agent restart
+
+
+tail -f /var/log/neutron/*.log
+
+echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+echo "net.ipv4.conf.all.rp_filter=0" >> /etc/sysctl.conf
+echo "net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf
+
+
+
+ip route del default via 192.168.254.70 dev mgmt
+
+neutron port-update 03713758-ccdc-4f9b-b534-7edeebd41785 \
+--fixed-ips subnet_id=c4136c57-66a0-4174-bf94-b3933e4929da,ip_address=192.168.3.100
+
+
+
+ip route add 192.168.3.0/24 via 192.168.1.10 dev net_a
+
+ip route delete 192.168.3.0/24
+
+
+
+
+
+#####################################################################################
+./aaa.attach.sh*
+./andsf.attach.sh*
+./bf.attach.sh*
+./cdf.attach.sh*
+./cgf.attach.sh*
+./hss.attach.sh*
+./icscf.attach.sh*
+./mdf.attach.sh*
+./mdf_fileplay.attach.sh*
+./mdf_trigger.attach.sh*
+./mdf_webcam.attach.sh*
+./pcrf.attach.sh*
+./pcscf.attach.sh*
+./pcscf.pcc.attach.sh*
+./scscf.attach.sh*
+./squid_rx_client.attach.sh*
+./squid_rx_logs.attach.sh*
+
+
+
+
+
+
+
+#####################################################################################
+neutron net-delete vlan2_113.x
+neutron net-create vlan2_113.x
+neutron subnet-create --name vlan2_sub_113.x \
+--gateway 192.168.113.1 \
+--allocation-pool start=192.168.113.2,end=192.168.113.254 \
+vlan2_113.x 192.168.113.0/24
+
+nova delete dist3
+neutron port-delete dist3_113-mgmt
+neutron port-create vlan2_113.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vlan2_sub_113.x,ip_address=192.168.113.3 \
+--name dist3_113-mgmt
+nova boot --flavor=m1.dist --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ dist3_113-mgmt / {print $2}') \
+dist3
+
+
+nova delete dist4
+neutron port-delete dist4_113-mgmt
+neutron port-create vlan2_113.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vlan2_sub_113.x,ip_address=192.168.113.4 \
+--name dist4_113-mgmt
+nova boot --flavor=m1.dist --image=ubuntu-mlnx-dhcp \
+--nic port-id=$(neutron port-list | awk '/ dist4_113-mgmt / {print $2}') \
+dist4
+
+
+service neutron-sriov-agent restart
+service neutron-server restart
+service neutron-l3-agent restart
+service neutron-dhcp-agent restart
+service neutron-metadata-agent restart
+service neutron-openvswitch-agent restart
+
+
+
+
+nova delete virtio-dist
+neutron port-delete virtio-dist-mgmt
+
+nova delete virtio-igw
+neutron port-delete virtio-igw-mgmt
+neutron port-delete virtio-igw-net_a
+
+nova delete virtio-gdb
+neutron port-delete virtio-gdb-mgmt
+neutron port-delete virtio-gdb-net_a
+
+nova delete virtio-enablers
+neutron port-delete virtio-enablers-mgmt
+neutron port-delete virtio-enablers-net_a
+
+nova delete virtio-pgw
+neutron port-delete virtio-pgw-mgmt
+neutron port-delete virtio-pgw-net_a
+neutron port-delete virtio-pgw-net_b
+
+nova delete virtio-sgw
+neutron port-delete virtio-sgw-mgmt
+neutron port-delete virtio-sgw-net_b
+neutron port-delete virtio-sgw-net_d
+
+nova delete virtio-mme
+neutron port-delete virtio-mme-mgmt
+neutron port-delete virtio-mme-net_d
+
+nova delete virtio-enb
+neutron port-delete virtio-enb-mgmt
+neutron port-delete virtio-enb-net_c
+neutron port-delete virtio-enb-net_d
+
+nova delete virtio-ue
+neutron port-delete virtio-ue-mgmt
+neutron port-delete virtio-ue-an_lte
+neutron port-delete virtio-ue-an_gprs
+neutron port-delete virtio-ue-an_umts
+neutron port-delete virtio-ue-an_wifi
+neutron port-delete virtio-ue-an_wimax
+
+
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_enablers / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_enb / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_gdb / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_igw / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_mme / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_pgw / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_sgw / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ dist_ue / {print $2}')
+
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_enablers / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_enb / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_gdb / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_igw / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_mme / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_pgw / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_sgw / {print $2}')
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ dist_ue / {print $2}')
+
+#########################
+## change ethernet name
+==> igw, gdb
+find /opt/OpenEPC/etc -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_a/eth1/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+
+==> enablers
+find /opt/OpenEPC/etc/rc.local.enablers -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc/rc.local.enablers -exec sed -i 's/net_a/eth1/g' {} \;
+find /opt/OpenEPC/etc/network -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc/network -exec sed -i 's/net_a/eth1/g' {} \;
+find /opt/OpenEPC/etc/init -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc/init -exec sed -i 's/net_a/eth1/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+
+==> pgw
+find /opt/OpenEPC/etc -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_a/eth1/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_b/eth2/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+mysql -h 192.168.254.253 -u root pdn_ops_db
+update pdn set intf='eth1' where id=1 and name='default_apn';
+
+==> sgw
+find /opt/OpenEPC/etc -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_b/eth1/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_d/eth2/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+==> mme
+find /opt/OpenEPC/etc -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_d/eth1/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+==> enb
+find /opt/OpenEPC/etc -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_d/eth1/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_c/eth2/g' {} \;
+find /opt/OpenEPC/bin -exec sed -i 's/net_c/eth2/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+==> enb
+find /opt/OpenEPC/etc -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_d/eth1/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/net_c/eth2/g' {} \;
+find /opt/OpenEPC/bin -exec sed -i 's/net_c/eth2/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules
+
+==> ue
+find /opt/OpenEPC/etc/network -exec sed -i 's/mgmt/eth0/g' {} \;
+find /opt/OpenEPC/etc/network -exec sed -i 's/an_gprs/eth1/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/an_umts/eth2/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/an_wifi/eth3/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/an_wimax/eth4/g' {} \;
+find /opt/OpenEPC/etc -exec sed -i 's/an_lte/eth5/g' {} \;
+sed -i 's/SUBSYSTEM/#SUBSYSTEM/g' /etc/udev/rules.d/70-persistent-net.rules

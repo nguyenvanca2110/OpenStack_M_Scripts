@@ -1,0 +1,673 @@
+. admin-openrc.sh
+neutron net-delete external
+neutron net-create external \
+--shared --router:external=True \
+--provider:network_type flat \
+--provider:physical_network ext_br-ext
+neutron subnet-create --name sub_external \
+--disable-dhcp \
+--gateway 192.168.11.1 \
+--allocation-pool start=192.168.11.201,end=192.168.11.220 \
+--dns-nameserver 8.8.8.8 \
+external 192.168.11.0/24
+
+
+. admin-openrc.sh vepc
+VNIC_TYPE_1="--binding:vnic-type direct"
+VNIC_TYPE_2="--binding:vnic-type direct"
+VNIC_TYPE_3="--binding:vnic-type direct"
+VNIC_TYPE_4="--binding:vnic-type direct"
+VNIC_TYPE_1=""
+VNIC_TYPE_2=""
+VNIC_TYPE_3=""
+VNIC_TYPE_4=""
+
+nova flavor-delete $(nova flavor-list | awk '/ m1.epc / {print $2}')
+nova flavor-delete $(nova flavor-list | awk '/ m1.dist / {print $2}')
+nova flavor-list
+
+nova flavor-create --is-public true m1.epc auto 4096 20 2 --rxtx-factor 1
+nova flavor-create --is-public true m1.dist auto 4096 40 1 --rxtx-factor 1
+nova flavor-key m1.epc set hw:mem_page_size=large
+nova flavor-key m1.dist set hw:mem_page_size=large
+
+
+glance image-create --name "dist_dist" --file dist_dist.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_igw" --file dist_igw.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_gdb" --file dist_gdb.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_enablers" --file dist_enablers.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_pgw" --file dist_pgw.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_sgw" --file dist_sgw.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_mme" --file dist_mme.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_enb" --file dist_enb.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+glance image-create --name "dist_ue" --file dist_ue2.qcow2 --disk-format qcow2 \
+--container-format bare --visibility public --progress --property hw_vif_model=virtio
+
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_dist / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_igw / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_gdb / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_enablers / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_pgw / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_sgw / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_mme / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_enb / {print $2}')
+glance image-update --property hw_vif_model=virtio --remove-property hw_vif_multiqueue_enabled $(glance image-list | awk '/ dist_ue / {print $2}')
+
+#######################################################
+## find instance_name for instance
+nova show \
+$(
+nova list --tenant $(openstack project show virtio \
+| awk '/ id / {print $4}') \
+| awk '/ virtio-pgw / {print $2}'
+) | grep instance_name
+
+## find interface list for vm
+##virsh domiflist <instance_name>
+## virtio-pgw gro off : net_a and net_b
+virsh domiflist instance-0000009e
+ethtool -K tap08b2c79a-37 gro off tso off
+ethtool -K tap780ba2db-8f gro off tso off
+ethtool --offload tap08b2c79a-37 gso off tso off sg off gro off
+ethtool --offload tap780ba2db-8f gso off tso off sg off gro off
+
+
+#######################################
+### create networks 
+#######################################
+
+neutron router-interface-delete ext_vepc vepc_sub_254.x
+neutron router-gateway-clear ext_vepc
+neutron router-delete ext_vepc
+
+neutron net-delete vepc_254.x
+neutron net-create vepc_254.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_254.x \
+--gateway 192.168.254.1 \
+--allocation-pool start=192.168.254.2,end=192.168.254.254 \
+--dns-nameserver 8.8.8.8 \
+vepc_254.x 192.168.254.0/24
+
+neutron router-create ext_vepc
+neutron router-gateway-set ext_vepc external
+neutron router-interface-add ext_vepc vepc_sub_254.x
+neutron router-port-list ext_vepc
+
+
+neutron net-delete vepc_1.x
+neutron net-create vepc_1.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_1.x \
+--disable-dhcp \
+--gateway 192.168.1.1 \
+--allocation-pool start=192.168.1.2,end=192.168.1.254 \
+vepc_1.x 192.168.1.0/24
+
+neutron net-delete vepc_2.x
+neutron net-create vepc_2.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_2.x \
+--disable-dhcp \
+--gateway 192.168.2.1 \
+--allocation-pool start=192.168.2.2,end=192.168.2.254 \
+vepc_2.x 192.168.2.0/24
+
+neutron net-delete vepc_3.x
+neutron net-create vepc_3.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_3.x \
+--disable-dhcp \
+--gateway 192.168.3.1 \
+--allocation-pool start=192.168.3.2,end=192.168.3.254 \
+vepc_3.x 192.168.3.0/24
+
+neutron net-delete vepc_4.x
+neutron net-create vepc_4.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_4.x \
+--disable-dhcp \
+--gateway 192.168.4.1 \
+--allocation-pool start=192.168.4.2,end=192.168.4.254 \
+vepc_4.x 192.168.4.0/24
+
+neutron net-delete vepc_101.x
+neutron net-create vepc_101.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_101.x \
+--disable-dhcp \
+--gateway 192.168.101.1 \
+--allocation-pool start=192.168.101.2,end=192.168.101.254 \
+vepc_101.x 192.168.101.0/24
+
+############# for ue test ############# 
+neutron net-delete vepc_102.x
+neutron net-create vepc_102.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_102.x \
+--disable-dhcp \
+--gateway 192.168.102.1 \
+--allocation-pool start=192.168.102.2,end=192.168.102.254 \
+vepc_102.x 192.168.102.0/24
+
+neutron net-delete vepc_103.x
+neutron net-create vepc_103.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_103.x \
+--disable-dhcp \
+--gateway 192.168.103.1 \
+--allocation-pool start=192.168.103.2,end=192.168.103.254 \
+vepc_103.x 192.168.103.0/24
+
+neutron net-delete vepc_104.x
+neutron net-create vepc_104.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name vepc_sub_104.x \
+--disable-dhcp \
+--gateway 192.168.104.1 \
+--allocation-pool start=192.168.104.2,end=192.168.104.254 \
+vepc_104.x 192.168.104.0/24
+
+#######################################
+### create vm
+#######################################
+
+nova delete vepc-dist
+neutron port-delete vepc-dist-mgmt
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.254 \
+--name vepc-dist-mgmt
+nova boot --flavor=m1.dist --image=dist_dist \
+--nic port-id=$(neutron port-list | awk '/ vepc-dist-mgmt / {print $2}') \
+--availability-zone nova:controller \
+vepc-dist
+
+nova delete vepc-igw
+neutron port-delete vepc-igw-mgmt
+neutron port-delete vepc-igw-net_a
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.70 \
+--name vepc-igw-mgmt
+neutron port-create vepc_1.x \
+--port_security_enabled=False $VNIC_TYPE_1 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.70 \
+--name vepc-igw-net_a
+nova boot --flavor=m1.epc --image=dist_igw \
+--nic port-id=$(neutron port-list | awk '/ vepc-igw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-igw-net_a / {print $2}') \
+--availability-zone nova:compute1 \
+vepc-igw
+
+nova delete vepc-gdb
+neutron port-delete vepc-gdb-mgmt
+neutron port-delete vepc-gdb-net_a
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.253 \
+--name vepc-gdb-mgmt
+neutron port-create vepc_1.x \
+--port_security_enabled=False $VNIC_TYPE_1 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.253 \
+--name vepc-gdb-net_a
+nova boot --flavor=m1.epc --image=dist_gdb \
+--nic port-id=$(neutron port-list | awk '/ vepc-gdb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-gdb-net_a / {print $2}') \
+--availability-zone nova:controller \
+vepc-gdb
+
+nova delete vepc-enablers
+neutron port-delete vepc-enablers-mgmt
+neutron port-delete vepc-enablers-net_a
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.40 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.32 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.30 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.31 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.41 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.42 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.50 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.51 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.52 \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.71 \
+--name vepc-enablers-mgmt
+neutron port-create vepc_1.x \
+--port_security_enabled=False $VNIC_TYPE_1 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.40 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.32 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.30 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.31 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.41 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.42 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.50 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.51 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.52 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.71 \
+--name vepc-enablers-net_a
+nova boot --flavor=m1.epc --image=dist_enablers \
+--nic port-id=$(neutron port-list | awk '/ vepc-enablers-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-enablers-net_a / {print $2}') \
+--availability-zone nova:controller \
+vepc-enablers
+
+nova delete vepc-pgw
+neutron port-delete vepc-pgw-mgmt
+neutron port-delete vepc-pgw-net_a
+neutron port-delete vepc-pgw-net_b
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.10 \
+--name vepc-pgw-mgmt
+neutron port-create vepc_1.x \
+--port_security_enabled=False $VNIC_TYPE_1 \
+--fixed-ip subnet_id=vepc_sub_1.x,ip_address=192.168.1.10 \
+--name vepc-pgw-net_a
+neutron port-create vepc_2.x \
+--port_security_enabled=False $VNIC_TYPE_2 \
+--fixed-ip subnet_id=vepc_sub_2.x,ip_address=192.168.2.10 \
+--name vepc-pgw-net_b
+nova boot --flavor=m1.epc --image=dist_pgw \
+--nic port-id=$(neutron port-list | awk '/ vepc-pgw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-pgw-net_a / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-pgw-net_b / {print $2}') \
+--availability-zone nova:controller \
+vepc-pgw
+
+nova delete vepc-sgw
+neutron port-delete vepc-sgw-mgmt
+neutron port-delete vepc-sgw-net_b
+neutron port-delete vepc-sgw-net_d
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.20 \
+--name vepc-sgw-mgmt
+neutron port-create vepc_2.x \
+--port_security_enabled=False $VNIC_TYPE_2 \
+--fixed-ip subnet_id=vepc_sub_2.x,ip_address=192.168.2.20 \
+--name vepc-sgw-net_b
+neutron port-create vepc_4.x \
+--port_security_enabled=False $VNIC_TYPE_4 \
+--fixed-ip subnet_id=vepc_sub_4.x,ip_address=192.168.4.20 \
+--name vepc-sgw-net_d
+nova boot --flavor=m1.epc --image=dist_sgw \
+--nic port-id=$(neutron port-list | awk '/ vepc-sgw-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-sgw-net_b / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-sgw-net_d / {print $2}') \
+--availability-zone nova:controller \
+vepc-sgw
+
+nova delete vepc-mme
+neutron port-delete vepc-mme-mgmt
+neutron port-delete vepc-mme-net_d
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.80 \
+--name vepc-mme-mgmt
+neutron port-create vepc_4.x \
+--port_security_enabled=False $VNIC_TYPE_4 \
+--fixed-ip subnet_id=vepc_sub_4.x,ip_address=192.168.4.80 \
+--name vepc-mme-net_d
+nova boot --flavor=m1.epc --image=dist_mme \
+--nic port-id=$(neutron port-list | awk '/ vepc-mme-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-mme-net_d / {print $2}') \
+--availability-zone nova:controller \
+vepc-mme
+
+nova delete vepc-enb
+neutron port-delete vepc-enb-mgmt
+neutron port-delete vepc-enb-net_d
+neutron port-delete vepc-enb-net_c
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.90 \
+--name vepc-enb-mgmt
+neutron port-create vepc_4.x \
+--port_security_enabled=False $VNIC_TYPE_4 \
+--fixed-ip subnet_id=vepc_sub_4.x,ip_address=192.168.4.90 \
+--name vepc-enb-net_d
+neutron port-create vepc_3.x \
+--port_security_enabled=False $VNIC_TYPE_3 \
+--fixed-ip subnet_id=vepc_sub_3.x,ip_address=192.168.3.29 \
+--name vepc-enb-net_c
+nova boot --flavor=m1.epc --image=dist_enb \
+--nic port-id=$(neutron port-list | awk '/ vepc-enb-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-enb-net_d / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-enb-net_c / {print $2}') \
+--availability-zone nova:controller \
+vepc-enb
+
+nova delete vepc-ue
+neutron port-delete vepc-ue-mgmt
+neutron port-delete vepc-ue-an_wimax
+neutron port-delete vepc-ue-an_lte
+neutron port-create vepc_254.x \
+--port_security_enabled=False \
+--fixed-ip subnet_id=vepc_sub_254.x,ip_address=192.168.254.100 \
+--name vepc-ue-mgmt
+neutron port-create vepc_101.x \
+--port_security_enabled=False \
+--name vepc-ue-an_wimax
+neutron port-create vepc_3.x \
+--port_security_enabled=False $VNIC_TYPE_3 \
+--fixed-ip subnet_id=vepc_sub_3.x,ip_address=192.168.3.100 \
+--name vepc-ue-an_lte
+nova boot --flavor=m1.epc --image=dist_ue \
+--nic port-id=$(neutron port-list | awk '/ vepc-ue-mgmt / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-ue-an_wimax / {print $2}') \
+--nic port-id=$(neutron port-list | awk '/ vepc-ue-an_lte / {print $2}') \
+--availability-zone nova:controller \
+vepc-ue
+
+
+nova delete vepc-dist
+neutron port-delete vepc-dist-mgmt
+
+nova delete vepc-igw
+neutron port-delete vepc-igw-mgmt
+neutron port-delete vepc-igw-net_a
+
+nova delete vepc-gdb
+neutron port-delete vepc-gdb-mgmt
+neutron port-delete vepc-gdb-net_a
+
+nova delete vepc-enablers
+neutron port-delete vepc-enablers-mgmt
+neutron port-delete vepc-enablers-net_a
+
+nova delete vepc-pgw
+neutron port-delete vepc-pgw-mgmt
+neutron port-delete vepc-pgw-net_a
+neutron port-delete vepc-pgw-net_b
+
+nova delete vepc-sgw
+neutron port-delete vepc-sgw-mgmt
+neutron port-delete vepc-sgw-net_b
+neutron port-delete vepc-sgw-net_d
+
+nova delete vepc-mme
+neutron port-delete vepc-mme-mgmt
+neutron port-delete vepc-mme-net_d
+
+nova delete vepc-enb
+neutron port-delete vepc-enb-mgmt
+neutron port-delete vepc-enb-net_c
+neutron port-delete vepc-enb-net_d
+
+nova delete vepc-ue
+neutron port-delete vepc-ue-mgmt
+neutron port-delete vepc-ue-an_wimax
+neutron port-delete vepc-ue-an_lte
+
+
+neutron router-interface-delete ext_vepc vepc_sub_254.x
+neutron router-gateway-clear ext_vepc
+neutron router-delete ext_vepc
+
+neutron net-delete vepc_254.x
+neutron net-delete vepc_1.x
+neutron net-delete vepc_2.x
+neutron net-delete vepc_3.x
+neutron net-delete vepc_4.x
+neutron net-delete vepc_101.x
+
+
+################### ubuntu 16.04 dpdk test
+## https://software.intel.com/en-us/articles/using-open-vswitch-with-dpdk-on-ubuntu
+glance image-update --remove-property hw_vif_model $(glance image-list | awk '/ ubuntu-server-16.04 / {print $2}')
+glance image-update --property hw_vif_model=e1000 $(glance image-list | awk '/ ubuntu-server-16.04 / {print $2}')
+
+nova flavor-create --is-public true m1.max auto 65536 200 8 --rxtx-factor 1
+
+neutron router-interface-delete ext admin_sub_254.x
+
+neutron net-delete admin_254.x
+neutron net-create admin_254.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name admin_sub_254.x \
+--gateway 192.168.254.1 \
+--allocation-pool start=192.168.254.2,end=192.168.254.254 \
+--dns-nameserver 8.8.8.8 \
+admin_254.x 192.168.254.0/24
+
+neutron router-interface-add ext admin_sub_254.x
+neutron router-port-list ext
+
+
+neutron net-delete admin_1.x
+neutron net-create admin_1.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name admin_sub_1.x \
+--disable-dhcp \
+--gateway 192.168.1.1 \
+--allocation-pool start=192.168.1.2,end=192.168.1.254 \
+admin_1.x 192.168.1.0/24
+
+neutron net-delete admin_2.x
+neutron net-create admin_2.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name admin_sub_2.x \
+--disable-dhcp \
+--gateway 192.168.2.1 \
+--allocation-pool start=192.168.2.2,end=192.168.2.254 \
+admin_2.x 192.168.2.0/24
+
+neutron net-delete admin_3.x
+neutron net-create admin_3.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name admin_sub_3.x \
+--disable-dhcp \
+--gateway 192.168.3.1 \
+--allocation-pool start=192.168.3.2,end=192.168.3.254 \
+admin_3.x 192.168.3.0/24
+
+nova delete admin-dist
+nova boot --flavor=m1.max --image=dpdk-test \
+--nic net-id=$(neutron net-list | awk '/ admin_254.x / {print $2}'),v4-fixed-ip=192.168.254.254 \
+--nic net-id=$(neutron net-list | awk '/ admin_1.x / {print $2}') \
+--nic net-id=$(neutron net-list | awk '/ admin_2.x / {print $2}') \
+--nic net-id=$(neutron net-list | awk '/ admin_3.x / {print $2}') \
+admin-dist
+
+
+
+## iommu on
+vi /etc/default/grub
+GRUB_CMDLINE_LINUX_DEFAULT=" ... iommu=pt intel_iommu=on"
+update-grub
+reboot
+
+## for uio_pci_generic, vfio-pci
+apt-get install linux-generic linux-headers-$(uname -r)
+
+## install openvswitch-switch-dpdk
+apt-get -y remove --purge --auto-remove openvswitch-switch
+apt-get -y install openvswitch-switch-dpdk
+update-alternatives --config ovs-vswitchd
+or
+update-alternatives --set ovs-vswitchd /usr/lib/openvswitch-switch-dpdk/ovs-vswitchd-dpdk
+
+## Passes in DPDK command-line options to ovs-vswitchd
+vi /etc/default/openvswitch-switch
+DPDK_OPTS='--dpdk -c 0x1 -n 4 -m 2048 --vhost-owner libvirt-qemu:kvm --vhost-perm 0664'
+
+## Configures hugepages
+# check hugepage
+# pge : support 4K
+# pse36 : support 2M
+# pdpe1gb : support 1G
+cat /proc/cpuinfo | egrep '(pge|pse36|pdpe1gb)'
+# support 1G hugepage and 2M
+# hugepages=? is memtotal / 1048576 / 2
+vi /etc/default/grub
+GRUB_CMDLINE_LINUX_DEFAULT="... default_hugepagesz=1G hugepagesz=1G hugepages=64 hugepagesz=2M hugepages=2048"
+update-grub
+
+## Configures hugepages
+vi /etc/dpdk/dpdk.conf
+NR_2M_PAGES=2048
+NR_1G_PAGES=64
+
+
+## Configures/assigns NICs for DPDK use (inter case don't need)
+dpdk_nic_bind --status
+modprobe uio_pci_generic
+modprobe vfio-pci
+vi /etc/dpdk/interfaces
+pci     0000:xx:xx.x    uio_pci_generic
+pci     0000:xx:xx.x    vfio-pci
+
+
+sed -ri -e 's,(KVM_HUGEPAGES=).*,\11,' /etc/default/qemu-kvm
+reboot
+
+## testing
+/usr/lib/openvswitch-switch-dpdk/ovs-vswitchd-dpdk --dpdk -c 0x1 -n 4 -m 2048 --vhost-owner libvirt-qemu:kvm --vhost-perm 0664
+
+## restart switch
+systemctl restart openvswitch-switch
+
+## add bridge
+ovs-vsctl add-br br-dpdk -- set bridge br-dpdk datapath_type=netdev
+ovs-vsctl add-port br-dpdk dpdk0 -- set Interface dpdk0 type=dpdk
+
+
+
+##########################################################################
+sed -ri -e 's,(KVM_HUGEPAGES=).*,\11,' /etc/default/qemu-kvm
+
+glance image-update --property hw_qemu_guest_agent=no $(glance image-list | awk '/ cirros-0.3.4-x86_64 / {print $2}')
+
+nova flavor-create --is-public true m1.small2 auto 2048 20 1 --rxtx-factor 1
+nova flavor-key m1.small set hw:mem_page_size=large
+nova flavor-key m1.small unset hw:numa_nodes hw:mem_page_size
+
+neutron net-delete admin_254.x
+neutron net-create admin_254.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name admin_sub_254.x \
+--gateway 192.168.254.1 \
+--allocation-pool start=192.168.254.2,end=192.168.254.254 \
+--dns-nameserver 8.8.8.8 \
+admin_254.x 192.168.254.0/24
+
+nova delete admin-dist
+nova boot --flavor=m1.small --image=ubuntu-server-14.04 \
+--nic net-id=$(neutron net-list | awk '/ admin_254.x / {print $2}') \
+admin-dist
+
+nova delete admin-dist2
+nova boot --flavor=m1.small --image=ubuntu-server-14.04 \
+--nic net-id=$(neutron net-list | awk '/ admin_254.x / {print $2}') \
+admin-dist2
+
+
+neutron net-delete admin_1.x
+neutron net-create admin_1.x \
+--provider:network_type vlan \
+--provider:physical_network ext_br-dpdk
+neutron subnet-create --name admin_sub_1.x \
+--gateway 192.168.1.1 \
+--allocation-pool start=192.168.1.2,end=192.168.1.254 \
+--dns-nameserver 8.8.8.8 \
+admin_1.x 192.168.1.0/24
+
+nova delete admin-dist3
+nova boot --flavor=m1.small2 --image=ubuntu-server-14.04 \
+--nic net-id=$(neutron net-list | awk '/ admin_1.x / {print $2}') \
+admin-dist3
+
+nova delete admin-dist4
+nova boot --flavor=m1.small2 --image=ubuntu-server-14.04 \
+--nic net-id=$(neutron net-list | awk '/ admin_1.x / {print $2}') \
+admin-dist4
+
+service nova-api restart
+service nova-cert restart
+service nova-consoleauth restart
+service nova-scheduler restart
+service nova-conductor restart
+service nova-novncproxy restart
+service nova-compute restart
+
+service neutron-server restart
+service neutron-l3-agent restart
+service neutron-dhcp-agent restart
+service neutron-metadata-agent restart
+service neutron-sriov-agent restart
+service neutron-openvswitch-agent restart
+service neutron-macvtap-agent restart
+
+service neutron-server stop
+service neutron-sriov-agent stop
+service neutron-l3-agent stop
+service neutron-dhcp-agent stop
+service neutron-metadata-agent stop
+service neutron-openvswitch-agent stop
+service neutron-macvtap-agent stop
+
+glance image-create --name "ubuntu-mlnx-dhcp" \
+ --file trusty-mlnx-dhcp.qcow2 \
+ --disk-format qcow2 --container-format bare --visibility public --progress 
+
+glance image-create --name "ubuntu-server-14.04" \
+ --file trusty-server-cloudimg-amd64-disk1_8GB.qcow2 \
+ --disk-format qcow2 --container-format bare --visibility public --progress \
+ --property hw_vif_multiqueue_enabled=true
+
+glance image-create --name "ubuntu-server-16.04" \
+ --file xenial-server-cloudimg-amd64-disk1_8GB.qcow2 \
+ --disk-format qcow2 --container-format bare --visibility public --progress \
+ --property hw_vif_model=rtl8139
+
+
+########################################################################
+## macvtap routing
+
+==> macvtap은 mac ehternet vlan을 사용하게된다.
+라우팅을 위해서는 macvtap을 사용 하는 포트가 아닌 데이터를 송수신 하는 포트에 패킷을 전달 해 줘야 한다.
+예를 들어 eth0을 macvtap 포트로 사용할때, 
+해당 포트를 통해 데이터를 수신하는 포트에 macvlan를 설정 해야 한다.
+아래는 수신포트가 eth1로 가정 한 경우 이며, vlan 설정 이후 openvswitch에서 데이터 라우팅을 위해
+br-int에 포트 정보와 태그 정보를 추가 한다.
+br-int에 라우팅을 위한 포트 추가 방법은 다음과 같다.
+ip netns exec qrouter-$(neutron router-list | awk '/ ext_vepc / {print $2}') ifconfig
+print==> qr-????-?? Link ....
+
+라우팅을 위한 macvlan 설정
+vconfig rem mlx1.1316
+vconfig add mlx1 1316
+ifconfig mlx1.1316 up
+ovs-vsctl del-port br-int mlx1.1316
+ovs-vsctl add-port br-int mlx1.1316 tag=1
+########################################################################
+
+
+
+
+
+python setup.py install --record uninstall.txt
+cat uninstall.txt | xargs rm -rf
