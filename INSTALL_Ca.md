@@ -37,13 +37,13 @@ vi chpasswd.sh
 ...
 USER_NAME=ubuntu   # target normal-user name
 USER_PASS=ubuntu   # target normal-user passwd
-CHANGED_PASS=ubuntu  # changed target normal and root passwd
+CHANGED_PASS=1  # changed target normal and root passwd
 ...
 
 vi chpasswd_shell.sh
 ...
 CURR_PASS=ubuntu   # target user before change passwd
-CH_PASS=ubuntu       # target user change passwd
+CH_PASS=1       # target user change passwd
 ...
 ```
 
@@ -76,7 +76,7 @@ CINDER_VOLUME=sdc
 HOSTNAME='controller'
 
 # Set password
-DEFAULT_PASS='lovedcn123'
+DEFAULT_PASS='1'
 
 # Remove Option
 REMOVE_PACKAGE='0'
