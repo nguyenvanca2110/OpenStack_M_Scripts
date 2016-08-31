@@ -2,54 +2,70 @@
 
 OpenStack Installation script by DCN Lab
 
-* **Version:** Mitaka
+* **Current Version:** Mitaka
+// Assume that your IPv4 address is 192.168.10.14
 
-* **Install mode:** All-in-One(only one box), Multi mode(controller+networks and compute node)
+Case: All-in-One
+1. Edit file "aio-configure.conf"
+"
+NET_LIST="eth0"
+BR_LIST="br-ext br-tacker" # Tacker IP is any address
+VLAN_BR_LIST="br-ext"
+VLAN_START=1000
+BR_MAPPING_LIST="br-ext br-tacker"
 
-Add *Tacker module* to All-in-One mode.
+BR_MODE="static static"
+BR_IP_LIST="192.168.10.14/24 192.168.120.1/24" # Tacker IP Tacker is any address
+BR_GW_LIST="192.168.10.1 0"
+BR_DNS_LIST="8.8.8.8 0"
 
-### default tenant network *"vxlan"* and  *"securitygroup"* remove
+MGMT_IP='192.168.10.14'
+LOCAL_IP='192.168.10.14'
+CINDER_VOLUME=sdc1
+HOSTNAME='controller'
 
-```
-vi /etc/neutron/plugins/ml2/ml2_conf.ini
-...
-tenant_network_types = flat,vxlan,gre,vlan
+# Set password
+DEFAULT_PASS='1234'
 
-...
-#enable_security_group = True
-#enable_ipset = True
-...
-```
+# Remove Option
+REMOVE_PACKAGE='0'
+
+# Ceilometer Option (0:False, 1:True)
+IS_TELEMETRY='1'
+
+# not yes!! networking-ovn Option (0:False, 1:True)
+IS_OVN='0'
+
+# tacker version(empty is master-not stable, default "-b stable/mitaka")
+IS_TACKER='1'
+TACKER_VERSION='-b stable/mitaka'
+
+# Senlin Option (0:False, 1:True)
+IS_SENLIN='0'
+
+# mellanox
+IS_MLNX='0'
+##MLNX_VERSION='-b stable/mitaka'
+## lspci -nn | grep Mell
+PCI_VENDOR_DEVS=15b3:1004
+DEVNAME=mlx0
+PHYSICAL_NETWORK=ext_br-sriov
+"
 
 
-## Installation:
+2. Edit file "chpass.sh"
 
-Installation instructions:
+USER_NAME=ubuntu ## target user name
+USER_PASS=1 ## target user passwd
+CHANGED_PASS=1234 ## changed target passwd
 
-http://114.71.50.187/openstack_script/openstack_script/blob/master/liberty/INSTALL.md
+3. Edit file "chpass_shell.sh"
+
+USER_PASS=1 ## target user passwd
+CHANGED_PASS=1234 ## changed target passwd
+
+4. Edit file "configure.conf"
 
 
-## Issues:
-
-Please report issue at:
-
-http://114.71.50.187/openstack_script/openstack_script/issues
 
 
-## External Resources:
-
-OpenStack document:
-
-http://docs.openstack.org/
-
-Tacker git:
-
-https://github.com/openstack/tacker
-
-Tacker test guide:
-
-http://114.71.50.187/openstack_script/openstack_script/blob/master/liberty/TACKER_GUIDE.md
-
-For help on usage, please send mail to
-
-<mailto:chonti@dcn.ssu.ac.kr> chonti.
