@@ -8,7 +8,7 @@
 ```
 cd ~/
 git clone http://114.71.50.187/openstack_script/openstack_script.git cloud
-cd cloud/liberty
+cd cloud/mitaka
 ```
 
 ## 2. Configuration files.
